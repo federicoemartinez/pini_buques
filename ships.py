@@ -6,13 +6,17 @@ import requests
 import smtplib
 
 # Import the email modules we'll need
-import os
-import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from json2html import *
 from bs4 import BeautifulSoup
 
+import time
+from threading import Timer
+from Queue import Queue, Empty
+import pystray
+import PIL.Image
+import sys
 
 class ShipTable(object):
     def save(self, filename):
@@ -101,6 +105,20 @@ class TRPTable(ShipTable):
     def get_status(self, row):
         return None
 
+
+def test_difference():
+    et = ExolganTable().load("exolg")
+    et2 = ExolganTable().load("exolg")
+    del(et.rows["E.R. SEOUL V.1724"])
+    del(et2.rows["MSC LUISA V.729"])
+    et2.rows["PERITO MORENO V.010"]["ETA"] = "13-07-2017"
+    exptected_diff = {u'MSC LUISA V.729': {'CHANGED': 'DELETED'},
+ u'PERITO MORENO V.010': {'ETA': {'NEW': '13-07-2017', 'OLD': u'18-07-2017 12:00'}, 'CHANGED': 'MODIFIED'}, 
+ u'E.R. SEOUL V.1724': {'status': 'Arribo', 'Servicio': u'SDG', 'ATD': u'25-07-2017', 'Inicio de Recepcion': u'06-07-2017', 'Armador': u'HL', 'Buque': u'E.R. SEOUL V.1724', 'CHANGED': 'ADDED', 'Fin Free Storage': u'21-07-2017', 'ETA': u'20-07-2017 23:00', 'Expo': u'12-07-2017 18:00', 'Cut Off': u'19-07-2017 17:30'}}
+    if not(exptected_diff == et.get_difference(et2)):
+        raise Exception(str(et.get_difference(et2)))
+    
+
 class ChangeDectector(object):
 
     exolgan_file = "exolgan_data"
@@ -135,43 +153,79 @@ class ChangeDectector(object):
         et2.save(table_file)
         return changes
 
+def process():
+    print "procesando"
+    with open("buques.txt", 'r') as buques:
+        names = [x.strip() for x in buques.readlines()]
+    cd = ChangeDectector(names)
+    changes = cd.get_changes()
+    if len(changes) == 0:
+        print "NO changes"
+        return
+    output = open("output.html", 'w')
+    html = json2html.convert(json = json.dumps(changes, sort_keys=True))
+    output.write(html)
+    output.close()
+    
+    with open("config.json", "r") as raw_config:
+        config = json.load(raw_config)
+        smtp_ssl_host = config["smtp_ssl_host"]
+        smtp_ssl_port = config["smtp_ssl_port"]
+        username = config["username"]
+        password = config["password"]
+        sender = config["sender"]
+        targets = config["targets"]
+    msg = MIMEMultipart()
+    msg['Subject'] = 'Actualizaciones en los buques'
+    msg['From'] = sender
+    msg['To'] = ', '.join(targets)
+
+    txt = MIMEText('Te paso la data')
+    msg.attach(txt)
+    img = MIMEText(html, 'html')
+
+    img.add_header('Content-Disposition',
+                   'attachment',
+                   filename=os.path.basename("output.html"))
+    msg.attach(img)
+    server = smtplib.SMTP_SSL(smtp_ssl_host, smtp_ssl_port)
+    server.login(username, password)
+    server.sendmail(sender, targets, msg.as_string())
+    server.quit()
+
+
+
+
 if __name__ == "__main__":
-        
-        with open("buques.txt", 'r') as buques:
-            names = [x.strip() for x in buques.readlines()]
-        cd = ChangeDectector(names)
-        changes = cd.get_changes()
-        output = open("output.html", 'w')
-        html = json2html.convert(json = json.dumps(changes, sort_keys=True))
-        output.write(html)
-        output.close()
-        
 
-        smtp_ssl_host = "smtp.mail.yahoo.com"
-        smtp_ssl_port = 465
-        username = 'YAHOO_ADDRESS'
-        password = 'PASSWORD'
-        sender = 'YAHOO_ADDRESS'
-        targets = ["SOME_EMAILS"]
+    icon = pystray.Icon('test name', icon = PIL.Image.open('buque.png'))
 
-        msg = MIMEMultipart()
-        msg['Subject'] = 'Actualizaciones en los buques'
-        msg['From'] = sender
-        msg['To'] = ', '.join(targets)
+    icon.icon = PIL.Image.open('buque.png')
 
-        txt = MIMEText('Te paso la data')
-        msg.attach(txt)
-        img = MIMEText(html, 'html')
+    queue = Queue()
+    def setup(icon):
+        icon.visible = True
+        try:
+            process()
+        except Exception, e:
+            # Deberiamos hacer algo
+            pass
+        while True:
+            try:
+                queue.get(True, 3600)
+                icon.stop()
+                sys.exit(0)
+            except Empty:
+                process()
 
-        img.add_header('Content-Disposition',
-                       'attachment',
-                       filename=os.path.basename("output.html"))
-        msg.attach(img)
+    def do_exit(self):
+        queue.put(1)
+        sys.exit(0)
 
-        server = smtplib.SMTP_SSL(smtp_ssl_host, smtp_ssl_port)
-        server.login(username, password)
-        server.sendmail(sender, targets, msg.as_string())
-        server.quit()
+
+    menuItem = pystray.MenuItem("Exit", do_exit)
+    icon.menu = pystray.Menu(menuItem)
+    icon.run(setup)
 
 
 
