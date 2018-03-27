@@ -64,6 +64,7 @@ class ShipTable(object):
 
     def load_from_url(self):
         self.rows = {}
+
         resp = requests.get(self.data_url)
         if resp.ok:
             html_doc = resp.content
@@ -83,6 +84,11 @@ class ShipTable(object):
                     if exolgan_row[self.ID_COLUMN] in self.rows: 
                         continue
                     self.rows[exolgan_row[self.ID_COLUMN]] = exolgan_row
+        self.post_process()
+
+    def post_process(self):
+        return
+
 
 
 class ExolganTable(ShipTable):
@@ -94,16 +100,30 @@ class ExolganTable(ShipTable):
     data_url = "http://apps.exolgan.com/scheduleout/content.jsp"
 
     def get_status(self, row):
-        return ExolganTable.TEXT_TO_STATE[row["class"][0]]
+        return ExolganTable.TEXT_TO_STATE.get(row["class"][0], None)
 
 
 class TRPTable(ShipTable):
-    COLUMNS = ("Servicio","Agencia", "E.T.A.", "Buque")
+    COLUMNS = ("Servicio","Agencia", "E.T.A.", "Buque", "Vencimiento free storage")
     ID_COLUMN = "Buque"
     data_url = "http://www.trp.com.ar/cronogramas/buques"
+    free_storage_url = "http://www.trp.com.ar/cronogramas/importacion"
 
     def get_status(self, row):
         return None
+
+    def post_process(self):
+        resp = requests.get(self.free_storage_url)
+        if resp.ok:
+            html_doc = resp.content
+            soup = BeautifulSoup(html_doc, 'html.parser')
+            table = soup.table
+            for row in table.find_all("tr"):
+                if row.find_all("th"):
+                    continue
+                buque, storage = map(lambda col: col.text.strip(), row.find_all("td"))
+                if buque in self.rows:
+                    self.rows[buque][self.COLUMNS[-1]] = storage
 
 
 def test_difference():
@@ -131,7 +151,6 @@ class ChangeDectector(object):
     def get_changes(self):
         exolgan = self.get_exolgan_changes()
         trp = self.get_trp_changes()
-
         res = {name:exolgan[name] for name in self.names if name in exolgan}
         res.update({name:trp[name] for name in self.names if name in trp})
         return res
@@ -155,6 +174,7 @@ class ChangeDectector(object):
 
 def process():
     print "procesando"
+
     with open("buques.txt", 'r') as buques:
         names = [x.strip() for x in buques.readlines()]
     cd = ChangeDectector(names)
@@ -176,7 +196,7 @@ def process():
         sender = config["sender"]
         targets = config["targets"]
     msg = MIMEMultipart()
-    msg['Subject'] = 'Actualizaciones en los buques'
+    msg['Subject'] = 'Nueva data sobre buques'
     msg['From'] = sender
     msg['To'] = ', '.join(targets)
 
@@ -188,12 +208,12 @@ def process():
                    'attachment',
                    filename=os.path.basename("output.html"))
     msg.attach(img)
+    print "going to send email"
     server = smtplib.SMTP_SSL(smtp_ssl_host, smtp_ssl_port)
     server.login(username, password)
-    server.sendmail(sender, targets, msg.as_string())
+    x = server.sendmail(sender, targets, msg.as_string())
+    print(x)
     server.quit()
-
-
 
 
 if __name__ == "__main__":
@@ -209,6 +229,7 @@ if __name__ == "__main__":
             process()
         except Exception, e:
             # Deberiamos hacer algo
+            print e
             pass
         while True:
             try:
@@ -226,7 +247,3 @@ if __name__ == "__main__":
     menuItem = pystray.MenuItem("Exit", do_exit)
     icon.menu = pystray.Menu(menuItem)
     icon.run(setup)
-
-
-
-
